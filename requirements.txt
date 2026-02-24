@@ -15,6 +15,22 @@
 #     cd vision && git checkout v0.20.0
 #     pip install --no-build-isolation .
 #
+# IMPORTANT — libcusparseLt (system library required by torch 2.5):
+#   Install via NVIDIA CUDA apt repository:
+#     wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb
+#     sudo dpkg -i cuda-keyring_1.1-1_all.deb
+#     sudo apt-get update
+#     sudo apt-get install -y libcusparselt0
+#
+#   Location is /usr/lib/aarch64-linux-gnu/libcusparseLt.so.0.7.1.0 and .0 
+#   Tp find this, dpkg -L libcusparselt0 | grep "\.so"
+#   The library installs to /usr/lib. Add to LD_LIBRARY_PATH:
+#     export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+#   To apply permanently in the conda environment:
+#     mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+#     echo 'export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH' \
+#         >> $CONDA_PREFIX/etc/conda/activate.d/cuda.sh
+#
 # IMPORTANT — setuptools:
 #   setuptools>=70 removes pkg_resources. Pin to 68.x before building torchvision:
 #     pip install "setuptools==68.0.0"
