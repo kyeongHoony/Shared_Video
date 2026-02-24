@@ -4,7 +4,6 @@ Jetson AGX Orin (Unified Memory) Version of Qwen Native Baseline
 Based on qwen_native_baseline.py — adapted for Jetson ARM64 + unified memory.
 
 Changes from original:
-  - bfloat16 → float16  (Jetson has no native bfloat16 hardware support)
   - device_map="auto" → device_map="cuda:0"  (unified memory: single device)
   - sys.path uses QWEN_BASE env var instead of hard-coded /data/Fall25/...
   - sintel_dir / output_dir / video_name passed via argparse (not hard-coded)
@@ -131,7 +130,7 @@ class JetsonQwenBaseline:
         model_start = time.time()
         self.model = AutoModelForVision2Seq.from_pretrained(
             self.model_path,
-            torch_dtype=torch.float16,      # float16: native Jetson support
+            torch_dtype=torch.bfloat16,     # bfloat16: Orin Ampere supports natively
             device_map="cuda:0",            # unified memory — single CUDA device
             low_cpu_mem_usage=True,
             attn_implementation="eager",    # no FlashAttention on Jetson
@@ -371,7 +370,7 @@ class JetsonQwenBaseline:
             "platform": "Jetson AGX Orin",
             "configuration": {
                 "model": self.model_path,
-                "dtype": "float16",
+                "dtype": "bfloat16",
                 "device_map": "cuda:0",
                 "frames_sampled": metrics.frames_sampled,
                 "sampling_method": "np.linspace",

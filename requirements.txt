@@ -48,6 +48,8 @@ qwen-vl-utils>=0.0.8
 setuptools==68.0.0
 
 # Computer vision
+# opencv-python-headless pinned to 4.8.1.78: versions >=4.9 require numpy>=2.0,
+# which conflicts with JetPack torch requiring numpy<2.0
 opencv-python-headless==4.8.1.78
 Pillow>=10.0.0
 
