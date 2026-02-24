@@ -1,0 +1,29 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Requirements for jetson_baseline.py / jetson_optimizer.py
+#
+# IMPORTANT — PyTorch on Jetson:
+#   Do NOT install torch via pip install torch.
+#   Install from NVIDIA's JetPack-compatible wheel instead:
+#     https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
+#   After torch is installed, torchvision should also be installed from the
+#   same source if needed.
+#
+# Install everything else with:
+#   pip install -r requirements.txt
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Hugging Face — model loading and inference
+transformers>=4.45.0
+accelerate>=0.26.0
+qwen-vl-utils>=0.0.8
+
+# Computer vision
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+
+# Numeric / system monitoring
+numpy>=1.24.0
+psutil>=5.9.0
+
+# Testing (optional — only needed for test_jetson.py)
+pytest>=7.0.0
