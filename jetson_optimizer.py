@@ -26,6 +26,7 @@ from typing import List, Dict, Tuple, Optional
 import argparse
 import struct
 import logging
+import threading  # [MEM-WATCH] for background memory watcher — remove after diagnosis
 from PIL import Image
 
 # ── Path setup ───────────────────────────────────────────────────────────────
@@ -246,8 +247,31 @@ class JetsonSpatioTemporalOptimizer:
         total_gb = vm.total / 1024 ** 3
         logger.info(f"[MEM{' ' + tag if tag else ''}] System RAM: {used_gb:.1f}/{total_gb:.1f} GB")
 
+    # [MEM-WATCH] Background memory watcher — remove after diagnosis
+    def _start_mem_watcher(self, interval: int = 3):
+        log_path = os.path.expanduser("~/mem_watch.log")
+        def _watch():
+            with open(log_path, "a") as f:
+                while True:
+                    vm = psutil.virtual_memory()
+                    rss = psutil.Process().memory_info().rss
+                    line = (
+                        f"{time.strftime('%H:%M:%S')} "
+                        f"sys={vm.used/1<<30:.2f}/{vm.total/1<<30:.1f}GB "
+                        f"avail={vm.available/1<<30:.2f}GB "
+                        f"self_rss={rss/1<<20:.0f}MB\n"  # self_rss: this process only
+                    )
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())  # force write to disk, not just OS buffer
+                    time.sleep(interval)
+        threading.Thread(target=_watch, daemon=True).start()  # daemon=True: exits with main process
+        logger.info(f"Memory watcher started -> {log_path}")
+    # [/MEM-WATCH]
+
     def load_model(self):
         """Load Qwen2.5-VL with Jetson-appropriate settings."""
+        self._start_mem_watcher()  # [MEM-WATCH] start watcher before model load — remove after diagnosis
         logger.info("Loading Qwen2.5-VL model (Jetson unified-memory config)...")
         self._log_memory("before load")
 
