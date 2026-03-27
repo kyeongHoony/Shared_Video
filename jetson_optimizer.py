@@ -292,9 +292,9 @@ class JetsonSpatioTemporalOptimizer:
             self.model_path,
             config=config,
             torch_dtype=torch.float16,      # float16: native Jetson support
-            device_map="cuda:0",            # unified memory — single CUDA device
+            device_map="auto",              # distribute layers across GPU then CPU
             low_cpu_mem_usage=True,
-            # max_memory removed: 64GB unified memory, no artificial cap needed
+            max_memory={0: "20GB", "cpu": "40GB"},  # GPU 0 up to 20GB, overflow to swappable CPU RAM
             attn_implementation="eager",    # no FlashAttention on Jetson
         )
         self.model.eval()
