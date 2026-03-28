@@ -23,14 +23,15 @@ logger = logging.getLogger(__name__)
 class MemLogger:
     def log(self, tag: str):
         """Log system RAM + CUDA memory at a named stage."""
+        GB    = 1 << 30
         vm    = psutil.virtual_memory()
-        alloc = torch.cuda.memory_allocated() / 1<<30   # tensors actually holding data
-        pool  = torch.cuda.memory_reserved()  / 1<<30   # PyTorch CUDA pool (alloc + cached free blocks)
+        alloc = torch.cuda.memory_allocated() / GB   # tensors actually holding data
+        pool  = torch.cuda.memory_reserved()  / GB   # PyTorch CUDA pool (alloc + cached free blocks)
 
         logger.info(
             f"[MEM {tag}] "
-            f"sys={vm.used/1<<30:.2f}/{vm.total/1<<30:.1f}GB "
-            f"avail={vm.available/1<<30:.2f}GB "
+            f"sys={vm.used/GB:.2f}/{vm.total/GB:.1f}GB "
+            f"avail={vm.available/GB:.2f}GB "
             f"cuda_alloc={alloc:.2f}GB "
             f"cuda_pool={pool:.2f}GB"
         )
