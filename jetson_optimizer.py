@@ -248,7 +248,7 @@ class JetsonSpatioTemporalOptimizer:
         total_gb = vm.total / 1024 ** 3
         logger.info(f"[MEM{' ' + tag if tag else ''}] System RAM: {used_gb:.1f}/{total_gb:.1f} GB")
 
-     def load_model(self):
+    def load_model(self):
         """Load Qwen2.5-VL with Jetson-appropriate settings."""
         logger.info("Loading Qwen2.5-VL model (Jetson unified-memory config)...")
         self._log_memory("before load")
