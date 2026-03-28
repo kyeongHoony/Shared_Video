@@ -37,6 +37,7 @@ if _qwen_base:
 
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoConfig
 from qwen_vl_utils import process_vision_info
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from mem_logger import MemLogger  # [MEM-WATCH] remove after diagnosis
 
 logging.basicConfig(level=logging.INFO)
@@ -376,7 +377,8 @@ class JetsonSpatioTemporalOptimizer:
             ml.log("before generate (prefill start)")  # [MEM-WATCH]
             try:
                 with torch.no_grad():
-                    outputs = self.model.generate(**inputs, max_new_tokens=50)
+                    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):  # O(n) memory instead of O(n²)
+                        outputs = self.model.generate(**inputs, max_new_tokens=50)
                 ml.log("after generate")  # [MEM-WATCH]
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
                 logger.error(f"OOM / Runtime error during inference: {e}")
