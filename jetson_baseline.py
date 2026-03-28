@@ -40,6 +40,7 @@ if _qwen_base:
 
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoConfig
 from qwen_vl_utils import process_vision_info
+from mem_logger import MemLogger  # [MEM-WATCH] remove after diagnosis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -166,12 +167,14 @@ class JetsonQwenBaseline:
 
         pipeline_start = time.time()
         metrics = DetailedLatencyMetrics()
+        ml = MemLogger()  # [MEM-WATCH] remove after diagnosis
 
         self._clear_cache()
 
         # STAGE 1: Frame loading & sampling
         logger.info(f"\n[Stage 1] Loading and sampling {num_frames_to_sample} frames from {video_name}...")
         frame_load_start = time.time()
+        ml.log("stage1 start")  # [MEM-WATCH]
 
         frame_dir = Path(self.sintel_dir) / "training" / "clean" / video_name
         all_frame_files = sorted(frame_dir.glob("*.png"))
@@ -186,6 +189,7 @@ class JetsonQwenBaseline:
         metrics.frames_loaded = total_frames_available
         metrics.frames_sampled = len(sampled_frames)
         logger.info(f"  Sampled {len(sampled_frames)} frames in {metrics.frame_loading_time:.3f}s")
+        ml.log(f"stage1 end ({len(sampled_frames)} frames loaded)")  # [MEM-WATCH]
 
         # STAGE 2: PIL conversion
         logger.info("\n[Stage 2] Converting to PIL images...")
@@ -193,6 +197,7 @@ class JetsonQwenBaseline:
         pil_frames = [Image.fromarray(frame) for frame in sampled_frames]
         metrics.image_conversion_time = time.time() - conversion_start
         logger.info(f"  PIL conversion in {metrics.image_conversion_time:.3f}s")
+        ml.log("stage2 end (PIL conversion)")  # [MEM-WATCH]
 
         # STAGE 3: Message preparation
         logger.info("\n[Stage 3] Preparing messages...")
@@ -220,6 +225,7 @@ class JetsonQwenBaseline:
         image_inputs, video_inputs = process_vision_info(messages)
         metrics.vision_processing_time = time.time() - vision_start
         logger.info(f"  Vision processing in {metrics.vision_processing_time:.3f}s")
+        ml.log("stage4 end (process_vision_info)")  # [MEM-WATCH]
 
         # STAGE 5: Text tokenization
         logger.info("\n[Stage 5] Text tokenization...")
@@ -242,6 +248,7 @@ class JetsonQwenBaseline:
         )
         metrics.processor_encoding_time = time.time() - encoding_start
         logger.info(f"  Encoding in {metrics.processor_encoding_time:.3f}s")
+        ml.log("stage6 end (processor output, CPU tensors)")  # [MEM-WATCH]
 
         # STAGE 7: Tensor transfer to CUDA
         logger.info("\n[Stage 7] Transferring tensors to device...")
@@ -252,6 +259,7 @@ class JetsonQwenBaseline:
         }
         metrics.tensor_transfer_time = time.time() - transfer_start
         logger.info(f"  Transfer in {metrics.tensor_transfer_time:.3f}s")
+        ml.log("stage7 end (tensors on CUDA)")  # [MEM-WATCH]
 
         # STAGE 8: Model inference
         logger.info("\n[Stage 8] Model inference...")
@@ -264,6 +272,7 @@ class JetsonQwenBaseline:
             )
 
         inference_start = time.time()
+        ml.log("stage8 start (before generate)")  # [MEM-WATCH]
         try:
             with torch.no_grad():
                 outputs = self.model.generate(
@@ -272,6 +281,7 @@ class JetsonQwenBaseline:
                     do_sample=False,
                 )
             metrics.generation_time = time.time() - inference_start
+            ml.log("stage8 end (after generate)")  # [MEM-WATCH]
 
         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
             logger.error(f"OOM / Runtime error during inference: {e}")

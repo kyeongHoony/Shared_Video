@@ -37,6 +37,7 @@ if _qwen_base:
 
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoConfig
 from qwen_vl_utils import process_vision_info
+from mem_logger import MemLogger  # [MEM-WATCH] remove after diagnosis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -320,8 +321,10 @@ class JetsonSpatioTemporalOptimizer:
         start_time = time.time()
         start_memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
         metrics = OptimizationMetrics()
+        ml = MemLogger()  # [MEM-WATCH] remove after diagnosis
 
         # Load frames
+        ml.log("before frame load")  # [MEM-WATCH]
         frame_dir = Path(self.sintel_dir) / "training" / "clean" / video_name
         frame_files = sorted(frame_dir.glob("*.png"))
         original_frames = []
@@ -330,6 +333,7 @@ class JetsonSpatioTemporalOptimizer:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             original_frames.append(frame)
         metrics.total_frames_original = len(original_frames)
+        ml.log(f"after frame load ({len(original_frames)} frames)")  # [MEM-WATCH]
 
         # Step 1: Temporal optimization
         logger.info(f"Analyzing motion for {video_name}...")
@@ -340,6 +344,7 @@ class JetsonSpatioTemporalOptimizer:
         selected_frames = [original_frames[i] for i in selected_frame_indices]
         metrics.total_frames_selected = len(selected_frames)
         metrics.temporal_reduction = 1.0 - (len(selected_frames) / len(original_frames))
+        ml.log(f"after frame selection ({len(selected_frames)} selected)")  # [MEM-WATCH]
 
         # Step 2: Spatial optimization
         logger.info("Performing spatial analysis...")
@@ -364,6 +369,7 @@ class JetsonSpatioTemporalOptimizer:
             1.0 / (1.0 - metrics.combined_reduction) if metrics.combined_reduction < 1.0 else float("inf")
         )
         metrics.preprocessing_time = time.time() - start_time
+        ml.log("after spatial analysis")  # [MEM-WATCH]
 
         # Step 3: Model inference
         if self.model is not None:
@@ -380,6 +386,7 @@ class JetsonSpatioTemporalOptimizer:
                 ],
             }]
             image_inputs, video_inputs = process_vision_info(messages)
+            ml.log("after process_vision_info")  # [MEM-WATCH]
             text_inputs = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -390,14 +397,18 @@ class JetsonSpatioTemporalOptimizer:
                 padding=True,
                 return_tensors="pt",
             )
+            ml.log("after processor (CPU tensors)")  # [MEM-WATCH]
             inputs = {
                 k: v.to(self.model.device) if torch.is_tensor(v) else v
                 for k, v in inputs.items()
             }
+            ml.log("after .to(cuda) — CPU copies freed, CUDA tensors live")  # [MEM-WATCH]
 
+            ml.log("before generate (prefill start)")  # [MEM-WATCH]
             try:
                 with torch.no_grad():
                     outputs = self.model.generate(**inputs, max_new_tokens=50)
+                ml.log("after generate")  # [MEM-WATCH]
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
                 logger.error(f"OOM / Runtime error during inference: {e}")
                 logger.error(
