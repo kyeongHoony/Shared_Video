@@ -248,38 +248,7 @@ class JetsonSpatioTemporalOptimizer:
         total_gb = vm.total / 1024 ** 3
         logger.info(f"[MEM{' ' + tag if tag else ''}] System RAM: {used_gb:.1f}/{total_gb:.1f} GB")
 
-    # [MEM-WATCH] Background memory watcher — remove after diagnosis
-    def _start_mem_watcher(self, interval: int = 1):
-        log_path = os.path.expanduser("~/mem_watch.log")
-
-        def _write_entry(f):  # write one entry and fsync immediately
-            vm = psutil.virtual_memory()
-            rss = psutil.Process().memory_info().rss
-            line = (
-                f"{time.strftime('%H:%M:%S')} "
-                f"sys={vm.used/1<<30:.2f}/{vm.total/1<<30:.1f}GB "
-                f"avail={vm.available/1<<30:.2f}GB "
-                f"self_rss={rss/1<<20:.0f}MB\n"  # self_rss: this process only
-            )
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())  # force write to disk, not just OS buffer
-
-        # Write first entry synchronously before spawning thread — guarantees at least one record
-        with open(log_path, "a") as f:
-            _write_entry(f)
-
-        def _watch():
-            with open(log_path, "a") as f:
-                while True:
-                    time.sleep(interval)
-                    _write_entry(f)
-
-        threading.Thread(target=_watch, daemon=True).start()  # daemon=True: exits with main process
-        logger.info(f"Memory watcher started -> {log_path}")
-    # [/MEM-WATCH]
-
-    def load_model(self):
+     def load_model(self):
         """Load Qwen2.5-VL with Jetson-appropriate settings."""
         logger.info("Loading Qwen2.5-VL model (Jetson unified-memory config)...")
         self._log_memory("before load")
@@ -512,7 +481,6 @@ if __name__ == "__main__":
         sintel_dir=args.sintel_dir,
         config=config,
     )
-    optimizer._start_mem_watcher()  # [MEM-WATCH] start before model load — remove after diagnosis
     optimizer.load_model()
 
     metrics = optimizer.optimize_video(args.video_name)
