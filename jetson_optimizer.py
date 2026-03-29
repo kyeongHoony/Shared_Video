@@ -21,7 +21,7 @@ import time
 import psutil
 import torch
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 import argparse
 import struct
@@ -82,6 +82,7 @@ class OptimizationMetrics:
     speedup_factor: float = 0.0
     generated_text: str = ""
     output_tokens: int = 0
+    stage_times: Dict[str, float] = field(default_factory=dict)
 
 
 # ── Motion analysis (unchanged from original) ────────────────────────────────
@@ -292,9 +293,11 @@ class JetsonSpatioTemporalOptimizer:
         start_memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
         metrics = OptimizationMetrics()
         ml = MemLogger()  # [MEM-WATCH] remove after diagnosis
+        stage_times: Dict[str, float] = {}
 
-        # Load frames
+        # Stage 0: Frame loading
         ml.log("before frame load")  # [MEM-WATCH]
+        t0 = time.time()
         frame_dir = Path(self.sintel_dir) / "training" / "clean" / video_name
         frame_files = sorted(frame_dir.glob("*.png"))
         original_frames = []
@@ -303,21 +306,29 @@ class JetsonSpatioTemporalOptimizer:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             original_frames.append(frame)
         metrics.total_frames_original = len(original_frames)
+        stage_times["0_frame_load"] = time.time() - t0
         ml.log(f"after frame load ({len(original_frames)} frames)")  # [MEM-WATCH]
 
-        # Step 1: Temporal optimization
+        # Stage 1: Motion profile
         logger.info(f"Analyzing motion for {video_name}...")
+        t0 = time.time()
         motion_profile = self.motion_analyzer.get_video_motion_profile(video_name)
+        stage_times["1_motion_profile"] = time.time() - t0
+
+        # Stage 2: Frame selection
+        t0 = time.time()
         selected_frame_indices, _ = self.frame_selector.select_frames_by_threshold(
             motion_profile, len(original_frames), self.config.base_frames, adaptive_count=True
         )
         selected_frames = [original_frames[i] for i in selected_frame_indices]
         metrics.total_frames_selected = len(selected_frames)
         metrics.temporal_reduction = 1.0 - (len(selected_frames) / len(original_frames))
+        stage_times["2_frame_selection"] = time.time() - t0
         ml.log(f"after frame selection ({len(selected_frames)} selected)")  # [MEM-WATCH]
 
-        # Step 2: Spatial optimization
+        # Stage 3: Spatial analysis
         logger.info("Performing spatial analysis...")
+        t0 = time.time()
         flow_dir = Path(self.sintel_dir) / "training" / "flow" / video_name
         flow_files = sorted(flow_dir.glob("*.flo"))
         total_patches = len(selected_frames) * self.config.patch_grid[0] * self.config.patch_grid[1]
@@ -327,6 +338,7 @@ class JetsonSpatioTemporalOptimizer:
                 flow = self.motion_analyzer.read_flo_file(str(flow_files[frame_idx]))
                 spatial_analysis = self.spatial_analyzer.analyze_frame_patches(flow, frame_idx)
                 encoded_patches += spatial_analysis["encoding_mask"].sum()
+        stage_times["3_spatial_analysis"] = time.time() - t0
 
         metrics.total_patches_original = total_patches
         metrics.total_patches_encoded = encoded_patches
@@ -347,7 +359,13 @@ class JetsonSpatioTemporalOptimizer:
             self._log_memory("before inference")
             inference_start = time.time()
 
+            # Stage 4: PIL conversion
+            t0 = time.time()
             pil_frames = [Image.fromarray(frame) for frame in selected_frames]
+            stage_times["4_pil_conversion"] = time.time() - t0
+
+            # Stage 5: Message preparation
+            t0 = time.time()
             messages = [{
                 "role": "user",
                 "content": [
@@ -355,11 +373,23 @@ class JetsonSpatioTemporalOptimizer:
                     {"type": "text", "text": query},
                 ],
             }]
+            stage_times["5_message_prep"] = time.time() - t0
+
+            # Stage 6: Vision processing
+            t0 = time.time()
             image_inputs, video_inputs = process_vision_info(messages)
+            stage_times["6_vision_processing"] = time.time() - t0
             ml.log("after process_vision_info")  # [MEM-WATCH]
+
+            # Stage 7: Text tokenization
+            t0 = time.time()
             text_inputs = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+            stage_times["7_text_tokenization"] = time.time() - t0
+
+            # Stage 8: Processor encoding
+            t0 = time.time()
             inputs = self.processor(
                 text=text_inputs,
                 images=image_inputs,
@@ -367,19 +397,28 @@ class JetsonSpatioTemporalOptimizer:
                 padding=True,
                 return_tensors="pt",
             )
+            stage_times["8_processor_encoding"] = time.time() - t0
             ml.log("after processor (CPU tensors)")  # [MEM-WATCH]
+
+            # Stage 9: Tensor transfer
+            t0 = time.time()
             inputs = {
                 k: v.to(self.model.device) if torch.is_tensor(v) else v
                 for k, v in inputs.items()
             }
+            stage_times["9_tensor_transfer"] = time.time() - t0
             ml.log("after .to(cuda) — CPU copies freed, CUDA tensors live")  # [MEM-WATCH]
 
+            # Stage 10: Model generation (ViT + LLM prefill + decode)
             ml.log("before generate (prefill start)")  # [MEM-WATCH]
+            t0 = time.time()
             try:
                 with torch.no_grad():
                     outputs = self.model.generate(**inputs, max_new_tokens=50)
+                stage_times["10_model_generation"] = time.time() - t0
                 ml.log("after generate")  # [MEM-WATCH]
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                stage_times["10_model_generation"] = time.time() - t0
                 logger.error(f"OOM / Runtime error during inference: {e}")
                 logger.error(
                     "On Jetson unified memory, CPU fallback does NOT free memory.\n"
@@ -390,7 +429,11 @@ class JetsonSpatioTemporalOptimizer:
                 )
                 raise
 
+            # Stage 11: Output decoding
+            t0 = time.time()
             generated_text = self.processor.decode(outputs[0], skip_special_tokens=True)
+            stage_times["11_output_decoding"] = time.time() - t0
+
             metrics.generated_text = generated_text
             metrics.output_tokens = len(outputs[0])
             metrics.inference_time = time.time() - inference_start
@@ -409,6 +452,7 @@ class JetsonSpatioTemporalOptimizer:
         metrics.system_memory_used_mb = vm.used / 1024 / 1024
         metrics.memory_reduction_mb = start_memory_mb - metrics.peak_memory_mb
         metrics.total_time = time.time() - start_time
+        metrics.stage_times = stage_times
 
         logger.info(
             f"Optimization complete: {metrics.combined_reduction:.1%} reduction, "
@@ -435,6 +479,10 @@ class JetsonSpatioTemporalOptimizer:
                 "preprocessing_time_sec": float(metrics.preprocessing_time),
                 "inference_time_sec": float(metrics.inference_time),
                 "total_time_sec": float(metrics.total_time),
+            },
+            "stage_breakdown": {
+                name: {"time_s": float(t), "percentage": float(t / metrics.total_time * 100) if metrics.total_time > 0 else 0.0}
+                for name, t in metrics.stage_times.items()
             },
             "quality_metrics": {
                 "shannon_entropy_retention": float(metrics.shannon_entropy_retention),
