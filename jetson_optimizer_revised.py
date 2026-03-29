@@ -10,6 +10,13 @@ Changes from original:
   - max_memory={0: "20GB"} removed  (64GB unified: no artificial limit needed)
   - OOM handling added around model.generate()
   - psutil.virtual_memory() logging added for system-wide RAM monitoring
+
+REVISED (bug fixes):
+  - Fix 1: combined_reduction formula — denominator was squaring total_frames_original.
+            Now: 1 - (encoded_patches / (total_frames_original * patch_grid_area))
+  - Fix 2: encoding_mask is now actually applied to inference frames — non-important
+            patches are zeroed out in the numpy frame before PIL conversion, so the
+            VLM sees only motion-relevant regions rather than the full image.
 """
 
 import os
@@ -281,6 +288,26 @@ class JetsonSpatioTemporalOptimizer:
             entropies.append(-np.sum(hist_norm * np.log2(hist_norm + 1e-10)))
         return np.mean(entropies)
 
+    def _apply_spatial_mask(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Zero out patches where mask is False (non-important regions).
+        Args:
+            frame: RGB numpy array (H, W, 3)
+            mask:  bool array (rows, cols) — True = encode, False = discard
+        Returns:
+            masked frame with non-important patches set to 0
+        """
+        masked = frame.copy()
+        h, w = masked.shape[:2]
+        rows, cols = mask.shape
+        patch_h, patch_w = h // rows, w // cols
+        for r in range(rows):
+            for c in range(cols):
+                if not mask[r, c]:
+                    y0, y1 = r * patch_h, (r + 1) * patch_h
+                    x0, x1 = c * patch_w, (c + 1) * patch_w
+                    masked[y0:y1, x0:x1] = 0
+        return masked
+
     def calculate_motion_coverage(self, motion_profile: Dict[int, float], selected_frames: List[int]) -> float:
         total_motion = sum(motion_profile.values())
         selected_motion = sum(motion_profile[i] for i in selected_frames)
@@ -322,18 +349,33 @@ class JetsonSpatioTemporalOptimizer:
         flow_files = sorted(flow_dir.glob("*.flo"))
         total_patches = len(selected_frames) * self.config.patch_grid[0] * self.config.patch_grid[1]
         encoded_patches = 0
+        # FIX 2: store per-frame masks so we can apply them to inference frames
+        frame_masks: Dict[int, np.ndarray] = {}
         for frame_idx in selected_frame_indices:
             if frame_idx < len(flow_files):
                 flow = self.motion_analyzer.read_flo_file(str(flow_files[frame_idx]))
                 spatial_analysis = self.spatial_analyzer.analyze_frame_patches(flow, frame_idx)
                 encoded_patches += spatial_analysis["encoding_mask"].sum()
+                frame_masks[frame_idx] = spatial_analysis["encoding_mask"]
+            else:
+                # No flow data for this frame: encode all patches (conservative fallback)
+                rows, cols = self.config.patch_grid
+                frame_masks[frame_idx] = np.ones((rows, cols), dtype=bool)
+                encoded_patches += rows * cols
 
         metrics.total_patches_original = total_patches
         metrics.total_patches_encoded = encoded_patches
         metrics.spatial_reduction = 1.0 - (encoded_patches / total_patches) if total_patches > 0 else 0.0
-        metrics.combined_reduction = 1.0 - (
-            (metrics.total_frames_selected * encoded_patches)
-            / (metrics.total_frames_original * metrics.total_frames_original * self.config.patch_grid[0] * self.config.patch_grid[1])
+
+        # FIX 1: combined_reduction — compare encoded patches vs processing ALL frames with ALL patches.
+        # Original bug: denominator squared total_frames_original; numerator multiplied encoded_patches
+        # by total_frames_selected (double-counting). Correct formula:
+        #   combined_reduction = 1 - (encoded_patches / (total_frames_original * patch_grid_area))
+        total_original_work = (
+            metrics.total_frames_original * self.config.patch_grid[0] * self.config.patch_grid[1]
+        )
+        metrics.combined_reduction = (
+            1.0 - (encoded_patches / total_original_work) if total_original_work > 0 else 0.0
         )
         metrics.speedup_factor = (
             1.0 / (1.0 - metrics.combined_reduction) if metrics.combined_reduction < 1.0 else float("inf")
@@ -347,7 +389,12 @@ class JetsonSpatioTemporalOptimizer:
             self._log_memory("before inference")
             inference_start = time.time()
 
-            pil_frames = [Image.fromarray(frame) for frame in selected_frames]
+            # FIX 2: apply spatial mask — zero out non-important patches before passing to VLM
+            masked_frames = [
+                self._apply_spatial_mask(frame, frame_masks[frame_idx])
+                for frame_idx, frame in zip(selected_frame_indices, selected_frames)
+            ]
+            pil_frames = [Image.fromarray(frame) for frame in masked_frames]
             messages = [{
                 "role": "user",
                 "content": [
@@ -421,6 +468,11 @@ class JetsonSpatioTemporalOptimizer:
         summary = {
             "video_name": video_name,
             "platform": "Jetson AGX Orin",
+            "version": "revised",
+            "fixes_applied": [
+                "combined_reduction formula: removed squared denominator",
+                "spatial mask applied to inference frames (non-important patches zeroed)",
+            ],
             "configuration": {
                 "temporal_threshold": self.config.temporal_motion_threshold,
                 "patch_grid": self.config.patch_grid,
@@ -450,7 +502,7 @@ class JetsonSpatioTemporalOptimizer:
                 "system_ram_used_mb": float(metrics.system_memory_used_mb),
             },
         }
-        out_path = Path(output_dir) / f"{video_name}_jetson_optimization_summary.json"
+        out_path = Path(output_dir) / f"{video_name}_jetson_optimization_revised_summary.json"
         with open(out_path, "w") as f:
             json.dump(summary, f, indent=2)
         logger.info(f"Saved summary to {out_path}")

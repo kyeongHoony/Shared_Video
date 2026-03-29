@@ -11,6 +11,7 @@ Changes from original:
   - torch.cuda.* calls guarded with is_available()
   - CPU fallback removed (meaningless on unified memory), OOM → clear guidance
   - Added psutil.virtual_memory() for system-wide RAM monitoring
+  - attn_implementation="eager" → "sdpa" (flash_sdp backend on Jetson Orin sm_87)
 """
 
 import os
@@ -40,6 +41,7 @@ if _qwen_base:
 
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoConfig
 from qwen_vl_utils import process_vision_info
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from mem_logger import MemLogger  # [MEM-WATCH] remove after diagnosis
 
 logging.basicConfig(level=logging.INFO)
@@ -129,12 +131,16 @@ class JetsonQwenBaseline:
         logger.info(f"Processor loaded in {time.time() - proc_start:.3f}s")
 
         model_start = time.time()
+        config = AutoConfig.from_pretrained(self.model_path)
+        config._attn_implementation = "sdpa"
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             self.model_path,
+            config=config,
             torch_dtype=torch.bfloat16,     # bfloat16: Orin Ampere supports natively
             device_map="cuda:0",            # unified memory — single CUDA device
             low_cpu_mem_usage=True,
-            attn_implementation="eager",    # no FlashAttention on Jetson
+            attn_implementation="sdpa",     # flash_sdp backend on Jetson Orin (sm_87)
         )
         self.model.eval()
         logger.info(f"Model loaded in {time.time() - model_start:.3f}s")
