@@ -428,7 +428,7 @@ class JetsonSpatioTemporalOptimizer:
             t0 = time.time()
             try:
                 with torch.no_grad():
-                    outputs = self.model.generate(**inputs, max_new_tokens=50)
+                    outputs = self.model.generate(**inputs, max_new_tokens=128)
                 torch.cuda.synchronize()
                 stage_times["10_model_generation"] = time.time() - t0
                 ml.log("after generate")  # [MEM-WATCH]

@@ -300,7 +300,7 @@ class JetsonQwenBaseline:
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=30,
+                    max_new_tokens=128,
                     do_sample=False,
                 )
             torch.cuda.synchronize()
