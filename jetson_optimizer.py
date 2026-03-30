@@ -410,11 +410,26 @@ class JetsonSpatioTemporalOptimizer:
             ml.log("after .to(cuda) — CPU copies freed, CUDA tensors live")  # [MEM-WATCH]
 
             # Stage 10: Model generation (ViT + LLM prefill + decode)
+            _vit_elapsed = [0.0]
+            _vit_t0      = [0.0]
+
+            def _vit_pre(module, input):
+                torch.cuda.synchronize()
+                _vit_t0[0] = time.time()
+
+            def _vit_post(module, input, output):
+                torch.cuda.synchronize()
+                _vit_elapsed[0] = time.time() - _vit_t0[0]
+
+            h_pre  = self.model.visual.register_forward_pre_hook(_vit_pre)
+            h_post = self.model.visual.register_forward_hook(_vit_post)
+
             ml.log("before generate (prefill start)")  # [MEM-WATCH]
             t0 = time.time()
             try:
                 with torch.no_grad():
                     outputs = self.model.generate(**inputs, max_new_tokens=50)
+                torch.cuda.synchronize()
                 stage_times["10_model_generation"] = time.time() - t0
                 ml.log("after generate")  # [MEM-WATCH]
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
@@ -428,6 +443,12 @@ class JetsonSpatioTemporalOptimizer:
                     "  3. Close other processes consuming RAM"
                 )
                 raise
+            finally:
+                h_pre.remove()
+                h_post.remove()
+
+            stage_times["10a_vit_encoding"]  = _vit_elapsed[0]
+            stage_times["10b_llm_generation"] = stage_times["10_model_generation"] - _vit_elapsed[0]
 
             # Stage 11: Output decoding
             t0 = time.time()
@@ -496,6 +517,10 @@ class JetsonSpatioTemporalOptimizer:
                 "patches_encoded": int(metrics.total_patches_encoded),
                 "process_rss_mb": float(metrics.peak_memory_mb),
                 "system_ram_used_mb": float(metrics.system_memory_used_mb),
+            },
+            "output": {
+                "tokens": int(metrics.output_tokens),
+                "text": metrics.generated_text,
             },
         }
         out_path = Path(output_dir) / f"{video_name}_jetson_optimization_summary.json"

@@ -64,6 +64,8 @@ class DetailedLatencyMetrics:
     tensor_transfer_time: float = 0.0
     model_forward_time: float = 0.0
     generation_time: float = 0.0
+    vit_encoding_time: float = 0.0
+    llm_generation_time: float = 0.0
     output_decoding_time: float = 0.0
     total_preprocessing_time: float = 0.0
     total_inference_time: float = 0.0
@@ -277,6 +279,21 @@ class JetsonQwenBaseline:
                 f"reserved: {metrics.gpu_memory_reserved_mb:.1f} MB"
             )
 
+        # ViT / LLM timing hooks
+        _vit_elapsed = [0.0]
+        _vit_t0      = [0.0]
+
+        def _vit_pre(module, input):
+            torch.cuda.synchronize()
+            _vit_t0[0] = time.time()
+
+        def _vit_post(module, input, output):
+            torch.cuda.synchronize()
+            _vit_elapsed[0] = time.time() - _vit_t0[0]
+
+        h_pre  = self.model.visual.register_forward_pre_hook(_vit_pre)
+        h_post = self.model.visual.register_forward_hook(_vit_post)
+
         inference_start = time.time()
         ml.log("stage8 start (before generate)")  # [MEM-WATCH]
         try:
@@ -286,6 +303,7 @@ class JetsonQwenBaseline:
                     max_new_tokens=30,
                     do_sample=False,
                 )
+            torch.cuda.synchronize()
             metrics.generation_time = time.time() - inference_start
             ml.log("stage8 end (after generate)")  # [MEM-WATCH]
 
@@ -299,8 +317,15 @@ class JetsonQwenBaseline:
                 "  3. Close other processes consuming RAM"
             )
             raise
+        finally:
+            h_pre.remove()
+            h_post.remove()
 
-        logger.info(f"  Generation in {metrics.generation_time:.3f}s")
+        metrics.vit_encoding_time  = _vit_elapsed[0]
+        metrics.llm_generation_time = metrics.generation_time - metrics.vit_encoding_time
+        logger.info(f"  Generation in {metrics.generation_time:.3f}s "
+                    f"(ViT: {metrics.vit_encoding_time:.3f}s, "
+                    f"LLM: {metrics.llm_generation_time:.3f}s)")
 
         # STAGE 9: Output decoding
         logger.info("\n[Stage 9] Decoding output...")
@@ -341,6 +366,8 @@ class JetsonQwenBaseline:
             "6_processor_encoding": metrics.processor_encoding_time,
             "7_tensor_transfer": metrics.tensor_transfer_time,
             "8_model_generation": metrics.generation_time,
+            "8a_vit_encoding": metrics.vit_encoding_time,
+            "8b_llm_generation": metrics.llm_generation_time,
             "9_output_decoding": metrics.output_decoding_time,
         }
 
