@@ -496,11 +496,13 @@ class JetsonSpatioTemporalOptimizer:
 
             # Stage 11: Output decoding
             t0 = time.time()
-            generated_text = self.processor.decode(outputs[0], skip_special_tokens=True)
+            generated_ids = [outputs[0][len(inputs["input_ids"][0]):]]
+            metrics.generated_text = self.processor.decode(
+                generated_ids[0], skip_special_tokens=True
+            )
             stage_times["11_output_decoding"] = time.time() - t0
 
-            metrics.generated_text = generated_text
-            metrics.output_tokens = len(outputs[0])
+            metrics.output_tokens = len(generated_ids[0])
             metrics.inference_time = time.time() - inference_start
             self._log_memory("after inference")
 
